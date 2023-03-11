@@ -12,7 +12,8 @@ def send_welcome(message):
     bot.reply_to(message,
                  "Привет! Это QAI Chat! Я с удовольствием помогу вам использовать ChatGPT прямо в Telegram! Для более подробных инструкций введите /help",
                  parse_mode="HTML")
-    bot.send_message(message.chat.id, "По умолчанию бот не запоминает историю переписки, соответственно, ChatGPT не будет ориентироваться на предыдущие сообщения. Если вы хотите включить, введите /switch_context_on.")
+    bot.send_message(message.chat.id,
+                     "По умолчанию бот не запоминает историю переписки, соответственно, ChatGPT не будет ориентироваться на предыдущие сообщения. Если вы хотите включить, введите /switch_context_on.")
 
 
 @bot.message_handler(commands=['help'])
@@ -47,7 +48,7 @@ def delete_api(message):
 
 
 @bot.message_handler(commands=['switch_context_on'])
-def send_welcome(message):
+def switch_context_on(message):
     context_on[message.chat.id] = True
     bot.reply_to(message,
                  "Запоминание контекста включено. Учтите, что запоминается вся переписка, начиная с этого момента, кроме служебных команд. Вероятно, вам понадобится ее сбросить, для этого введите /context_reset. Чтобы выключить этот режим, введите /switch_context_off",
@@ -55,48 +56,62 @@ def send_welcome(message):
 
 
 @bot.message_handler(commands=['switch_context_off'])
-def send_welcome(message):
+def switch_context_off(message):
     context_on[message.chat.id] = False
-    bot.reply_to(message, "Запоминание контекста отключено. Чтобы сбросить сохраненную историю, введите /context_reset. Чтобы включить снова, введите /switch_context_on",
+    bot.reply_to(message,
+                 "Запоминание контекста отключено. Чтобы сбросить сохраненную историю, введите /context_reset. Чтобы включить снова, введите /switch_context_on",
                  parse_mode="HTML")
 
+
 @bot.message_handler(commands=['context_reset'])
-def send_welcome(message):
-    bot.reply_to(message, f"История переписки сброшена. ChatGPT забыл все, статус запоминания контекста: {context_on[message.chat.id]}. {'Продолжайте переписку, чтобы бот начал запоминать историю. Выключить режим: /switch_context_off' if context_on[message.chat.id] else 'Чтобы включить режим запоминания контекста, введите /switch_context_on'}",
+def context_reset(message):
+    bot.reply_to(message,
+                 f"История переписки сброшена. ChatGPT забыл все, статус запоминания контекста: {context_on.get(message.chat.id, False)}. {'Продолжайте переписку, чтобы бот начал запоминать историю. Выключить режим: /switch_context_off' if context_on.get(message.chat.id, False) else 'Чтобы включить режим запоминания контекста, введите /switch_context_on'}",
                  parse_mode="HTML")
     previous_msgs[message.chat.id] = ""
 
+
 @bot.message_handler(commands=['debug'])
 def debug(message):
-    bot.reply_to(message, str(context_on.get(message.chat.id, False)) + " /// " + str(message.chat.id) + " /// " + keylist.get(
-        message.chat.id, "None"))
+    bot.reply_to(message,
+                 str(context_on.get(message.chat.id, False)) + " /// " + str(message.chat.id) + " /// " + keylist.get(
+                     message.chat.id, "None"))
     bot.reply_to(message, previous_msgs[message.chat.id])
 
 
 @bot.message_handler(func=lambda message: True)
 def ask(message):
-    global previous_msgs
-    if message.chat.id not in keylist.keys():
-        bot.reply_to(message, "Вы не установили ключ. Введите /api для того, чтобы установить")
-    else:
-        loading = bot.reply_to(message, "Отправляю запрос...")
-        openai.api_key = keylist[message.chat.id]
-        if context_on.get(message.chat.id, False):
-            what_are_you_asking = previous_msgs.get(message.chat.id, "") + f"\n\n{message.from_user.first_name}: " + ((message.text + ".") if message.text[-1] not in ".!?" else message.text)
+    try:
+        global previous_msgs
+        if message.chat.id not in keylist.keys():
+            bot.reply_to(message, "Вы не установили ключ. Введите /api для того, чтобы установить")
         else:
-            what_are_you_asking = message.text
-        completion = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "user", "content": "Добавь сюда только одну реплику собеседника 'ChatGPT'. \n\n\n" + what_are_you_asking}
-            ]
-        )
-        openai.api_key = None
-        current_reply = completion.choices[0].message.content
-        if context_on.get(message.chat.id, False):
-            previous_msgs[message.chat.id] = what_are_you_asking + "\n\nChatGPT: " + current_reply
-        bot.delete_message(message.chat.id, loading.message_id)
-        bot.reply_to(message, current_reply, parse_mode=None)
+            loading = bot.reply_to(message, "Отправляю запрос...")
+            openai.api_key = keylist[message.chat.id]
+            if context_on.get(message.chat.id, False):
+                what_are_you_asking = previous_msgs.get(message.chat.id,
+                                                        "") + f"\n\n{message.from_user.first_name}: " + (
+                                          (message.text + ".") if message.text[-1] not in ".!?" else message.text)
+            else:
+                what_are_you_asking = message.text
+            query = (
+                    "Добавь сюда только одну реплику собеседника 'ChatGPT'. \n\n\n" + what_are_you_asking) if context_on.get(
+                message.chat.id, False) else what_are_you_asking
+            completion = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "user",
+                     "content": query}
+                ]
+            )
+            openai.api_key = None
+            current_reply = completion.choices[0].message.content
+            if context_on.get(message.chat.id, False):
+                previous_msgs[message.chat.id] = what_are_you_asking + "\n\nChatGPT: " + current_reply
+            bot.delete_message(message.chat.id, loading.message_id)
+            bot.reply_to(message, current_reply, parse_mode=None)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❗️ Извините, произошла ошибка: \n\n{e}")
 
 
 bot.infinity_polling()
