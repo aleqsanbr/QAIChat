@@ -5,7 +5,7 @@ keylist = {}
 context_on = {}
 msgs = {}
 history_debug = {}
-bot = telebot.TeleBot("", parse_mode=None, skip_pending=True)
+bot = telebot.TeleBot(open("botapi.txt").readline(), parse_mode=None, skip_pending=True)
 
 
 @bot.message_handler(commands=['start'])
@@ -20,7 +20,7 @@ def send_welcome(message):
 @bot.message_handler(commands=['help'])
 def help(message):
     bot.reply_to(message,
-                 "<b>Инструкция по использованию бота</b>\n\n1️⃣ Зарегистрируйтесь на OpenAI. Для этого сначала ознакомьтесь с материалом (https://habr.com/ru/post/704600) на Habr (там подробно описано, как зарегистрировать виртуальный номер и прочие моменты, потому что OpenAI, вообще говоря, недоступен в России)\n\n2️⃣ После регистрации получите API-ключ на https://platform.openai.com/account/api-keys. Далее введите команду /api, чтобы сохранить его здесь (без этого бот работать не будет)\n\n3️⃣ После установки ключа пишите любое сообщение, я передам его ChatGPT и возвращу ответ\n\n<b>Обратите внимание:</b> бот пока не умеет запоминать контекст предыдущих сообщений.\n\n4️⃣ По умолчанию бот запоминает историю переписки, соответственно, ChatGPT будет ориентироваться на предыдущие сообщения. Если вы хотите выключить, введите /switch_context_off. В таком случае бот выйдет из режима продолжения диалога и по API не будет передаваться вся история переписки. Чтобы очистить сохраненную переписку, введите /context_reset. Чтобы войти из режима, введите /switch_context_on.",
+                 "<b>Инструкция по использованию бота</b>\n\n1️⃣ Зарегистрируйтесь на OpenAI. Для этого сначала ознакомьтесь с материалом (https://habr.com/ru/post/704600) на Habr (там подробно описано, как зарегистрировать виртуальный номер и прочие моменты, потому что OpenAI, вообще говоря, недоступен в России)\n\n2️⃣ После регистрации получите API-ключ на https://platform.openai.com/account/api-keys. Далее введите команду /api, чтобы сохранить его здесь (без этого бот работать не будет)\n\n3️⃣ После установки ключа пишите любое сообщение, я передам его ChatGPT и возвращу ответ\n\n4️⃣ По умолчанию бот запоминает историю переписки, соответственно, ChatGPT будет ориентироваться на предыдущие сообщения. Если вы хотите выключить, введите /switch_context_off. В таком случае бот выйдет из режима продолжения диалога и по API не будет передаваться вся история переписки. Чтобы очистить сохраненную переписку, введите /context_reset. Чтобы войти из режима, введите /switch_context_on.",
                  parse_mode="HTML")
 
 
@@ -84,6 +84,13 @@ def debug(message):
     print(msgs[message.chat.id])
 
 
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
+@bot.message_handler(commands=['motherlode'])
+def demo(message):
+    bot.reply_to(message, "Motherlode-ключ активирован")
+    keylist[message.chat.id] = open("openaiapi.txt").readline()
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
+
 @bot.message_handler(func=lambda message: True)
 def ask(message):
     try:
@@ -91,7 +98,8 @@ def ask(message):
         if message.chat.id not in keylist.keys():
             bot.reply_to(message, "Вы не установили ключ. Введите /api для того, чтобы установить")
         else:
-            loading = bot.reply_to(message, "Отправляю запрос...")
+            # loading = bot.reply_to(message, "Отправляю запрос...")
+            bot.send_chat_action(chat_id=message.chat.id, action="typing", timeout=15)
             openai.api_key = keylist[message.chat.id]
             if context_on.get(message.chat.id, True):
                 msgs[message.chat.id] = list(msgs.get(message.chat.id, {}))
@@ -108,7 +116,7 @@ def ask(message):
             if context_on.get(message.chat.id, True):
                 msgs[message.chat.id] = list(msgs.get(message.chat.id, {}))
                 msgs[message.chat.id].append({"role": "assistant", "content": current_reply})
-            bot.delete_message(message.chat.id, loading.message_id)
+            # bot.delete_message(message.chat.id, loading.message_id)
             bot.reply_to(message, current_reply, parse_mode=None)
     except Exception as e:
         bot.send_message(message.chat.id, f"❗️ Извините, произошла ошибка: \n\n{e}")
