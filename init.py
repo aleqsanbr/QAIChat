@@ -1,7 +1,7 @@
 import sqlite3 as sl
 
 print("Сейчас мы настроим некоторые необходимые файлы для работы бота...")
-"""
+
 with open("botapi.txt", "w") as botapi_txt:
     key = input("Введите API-ключ бота: ")
     botapi_txt.write(key)
@@ -10,7 +10,7 @@ with open("openaiapi.txt", "w") as openaiapi_txt:
     key = input("Введите API-ключ OpenAI: ")
     openaiapi_txt.write(key)
     print("Создан файл openaiapi.txt")
-"""
+
 
 print("Создаю базу данных...")
 qaidb = sl.connect('qai.db')
