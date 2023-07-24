@@ -1,3 +1,6 @@
+import math
+import hashlib
+import time
 import telebot
 import openai
 from telebot import types
@@ -18,6 +21,30 @@ msgs = {}
 history_debug = {}
 
 bot = telebot.TeleBot(open("botapi.txt").readline(), parse_mode=None, skip_pending=True)
+
+
+def get_all_users_ids():
+    ids_raw = user_db.execute("SELECT user_id FROM user_data")
+    ids = []
+    for id in ids_raw:
+        ids.append(int(id[0]))
+    return ids
+
+
+@bot.message_handler(commands=['admin_send_message'])
+def admin_send_message(message):
+    if int(message.chat.id) == int(open("creator_id.txt", "r").readline()):
+        bot.send_message(message.chat.id, "Введите сообщение для отправки пользователям.")
+        bot.register_next_step_handler(message, admin_send_message_worker)
+    else:
+        bot.send_message(message.chat.id, "❌")
+
+
+def admin_send_message_worker(message):
+    for id in get_all_users_ids():
+        bot.send_message(id, f"<b>ℹ️ {insert_reply_byid('service_notification', id)}</b>\n\n{message.text}",
+                         parse_mode="HTML")
+        time.sleep(5)
 
 
 def get_user_data_row(user_id: int):
@@ -72,15 +99,18 @@ def set_id_db(user_id: int):
     user_db.execute(sql, data)
 
 
-@bot.callback_query_handler(func=lambda call: True)
+@bot.callback_query_handler(func=lambda call: call.data in ['ru', 'en'])
 def lang_call(call):
     set_lang_db(call.data, call.message.chat.id)
     if call.data == 'ru':
         bot.send_message(call.message.chat.id, 'Вы выбрали русский язык.')
     elif call.data == 'en':
         bot.send_message(call.message.chat.id, 'You have chosen English language.')
+    else:
+        bot.send_message(call.message.chat.id, 'Хммм....')
 
 
+@bot.message_handler(func=lambda message: message.chat.id not in get_all_users_ids())
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     set_id_db(message.chat.id)
@@ -157,26 +187,38 @@ def debug(message):
     for n in get_user_data_row(message.chat.id):
         output += str(n) + "\n"
     bot.reply_to(message, output)
-    print(output)
-    '''
-    history_debug[message.chat.id] = ""
-    for i in msgs[message.chat.id]:
-        history_debug[message.chat.id] += i["role"] + ": " + i["content"] + "\n\n"
-    bot.reply_to(message, history_debug[message.chat.id])
-    print(msgs[message.chat.id])
-    '''
 
 
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
+@bot.callback_query_handler(func=lambda call: str(call.data).startswith("DEL_"))
+def delete_call(call):
+    user_db.execute("DELETE FROM msgs_history WHERE message_id = ?", (call.data[4:],))
+    bot.send_message(call.message.chat.id, insert_reply_byid("deleted", call.message.chat.id))
+
+
+@bot.message_handler(commands=['select_to_delete'])
+def select_to_delete(message):
+    all_user_context = user_db.execute('SELECT * FROM msgs_history WHERE user_id = ?', (message.chat.id,))
+    delete_keyboard = types.InlineKeyboardMarkup()
+    for i in range(0, len(all_user_context)):
+        delete_keyboard.add(types.InlineKeyboardButton(
+           f'{all_user_context[i][1].capitalize()}: "{all_user_context[i][2]}"',
+           callback_data="DEL_" + str(all_user_context[i][3]))
+        )
+    bot.send_message(message.chat.id, insert_reply_byid("select_to_delete", message.chat.id),
+                     reply_markup=delete_keyboard)
+
+
 @bot.message_handler(commands=['motherlode'])
 def demo(message):
     bot.reply_to(message, "ok")
     set_apikey_db(open("openaiapi.txt").readline(), message.chat.id)
-# !!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
 
 
 def add_context_element(role: str, content: str, user_id: int):
-    user_db.execute("INSERT INTO msgs_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, role, content,))
+    data = f"{user_id}{role}{content}{time.time()}"
+    muid = hashlib.md5(data.encode()).hexdigest()
+    user_db.execute("INSERT INTO msgs_history (user_id, role, message, message_id) VALUES (?, ?, ?, ?)",
+                    (user_id, role, content, muid))
 
 
 def openai_request(user_id: int):
@@ -187,16 +229,44 @@ def openai_request(user_id: int):
 
 
 def select_all_user_context(user_id: int):
-    results = user_db.execute('SELECT * FROM msgs_history WHERE user_id = ?', (user_id,))
-    all_user_context = results
+    all_user_context = user_db.execute('SELECT * FROM msgs_history WHERE user_id = ?', (user_id,))
     msgs[user_id] = list()
     for i in range(0, len(all_user_context)):
         msgs[user_id].append({"role": all_user_context[i][1], "content": all_user_context[i][2]})
 
 
-@bot.message_handler(func=lambda message: True)
+@bot.callback_query_handler(func=lambda call: call.data == "continue_system")
+def continue_system_call(call):
+    bot.send_message(call.message.chat.id, insert_reply_byid("enter_system_text", call.message.chat.id))
+    bot.register_next_step_handler(call.message, set_system_worker)
+
+
+@bot.message_handler(commands=['set_system'])
+def set_system(message):
+    continue_system_kb = types.InlineKeyboardMarkup()
+    continue_system_kb.add(types.InlineKeyboardButton(insert_reply_byid("add_system_button", message.chat.id),
+                                                      callback_data="continue_system"))
+    bot.send_message(message.chat.id, insert_reply_byid("set_system", message.chat.id), reply_markup=continue_system_kb)
+
+
+def set_system_worker(message):
+    add_context_element("system", message.text, message.chat.id)
+    bot.send_message(message.chat.id, "✔️")
+
+
+
+@bot.callback_query_handler(func=lambda call: call.data in ["context_reset", "select_to_delete"])
+def length_err_call(call):
+    if call.data == "context_reset":
+        context_reset(call.message)
+    if call.data == "select_to_delete":
+        select_to_delete(call.message)
+
+
+@bot.message_handler(func=lambda message: message.chat.id in get_all_users_ids())
 def ask(message):
     try:
+
         if get_user_data_row(message.chat.id)[1] is None:
             bot.reply_to(message, insert_reply_byid("noapi_error", message.chat.id))
             return
@@ -220,12 +290,20 @@ def ask(message):
     except openai.InvalidRequestError as e:
         token_lengths = re.findall(r"\d+(?=\s+tokens)", str(e))
         to_remove = int(token_lengths[1]) - int(token_lengths[0])
-        bot.send_message(message.chat.id, f"🪄 Вероятно, превышен лимит величины контекста (токенов). "
-                                          f"Модель имеет лимит {token_lengths[0]}, размер вашего контекста составляет "
-                                          f"{token_lengths[1]}. <u>Выберите сообщения, которые удалить</u>, либо "
-                                          f"удалите все сразу: /context_reset. Предположительно, требуется удалить "
-                                          f"{to_remove} токенов(-а), что в количестве слов ≈ {to_remove * 3 / 4}.",
-                         parse_mode="HTML")
+        length_err_keyboard = types.InlineKeyboardMarkup()
+        length_err_keyboard.add(types.InlineKeyboardButton(insert_reply_byid("select_to_delete", message.chat.id),
+                                                           callback_data="select_to_delete"))
+        length_err_keyboard.add(types.InlineKeyboardButton(insert_reply_byid("context_reset_button", message.chat.id),
+                                                           callback_data="context_reset", ))
+        bot.send_message(message.chat.id, f"{insert_reply_byid('token_length_error_1', message.chat.id)}"
+                                          f"{token_lengths[0]}"
+                                          f"{insert_reply_byid('token_length_error_2', message.chat.id)}"
+                                          f"{token_lengths[1]}"
+                                          f"{insert_reply_byid('token_length_error_3', message.chat.id)}"
+                                          f"{to_remove}"
+                                          f"{insert_reply_byid('token_length_error_4', message.chat.id)}"
+                                          f"{math.ceil(to_remove * 3 / 4)}.",
+                         parse_mode="HTML", reply_markup=length_err_keyboard)
 
     except Exception as e:
         bot.send_message(message.chat.id,

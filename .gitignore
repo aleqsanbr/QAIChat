@@ -5,3 +5,4 @@ venv
 qai.db
 test.py
 /qai.db-journal
+/creator_id.txt
