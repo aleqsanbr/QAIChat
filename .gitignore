@@ -4,3 +4,4 @@ openaiapi.txt
 venv
 qai.db
 test.py
+/qai.db-journal

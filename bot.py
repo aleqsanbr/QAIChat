@@ -1,12 +1,18 @@
 import telebot
 import openai
-import sqlite3 as sl
 from telebot import types
+import re
+from sqlite3worker import Sqlite3Worker as slw
 
+'''
 user_db = sl.connect('qai.db', check_same_thread=False)
 user_db_cursor = user_db.cursor()
 replies_db = sl.connect("multilang_replies.db", check_same_thread=False)
 replies_db_cursor = replies_db.cursor()
+'''
+
+user_db = slw("qai.db")
+replies_db = slw("multilang_replies.db")
 
 msgs = {}
 history_debug = {}
@@ -15,19 +21,18 @@ bot = telebot.TeleBot(open("botapi.txt").readline(), parse_mode=None, skip_pendi
 
 
 def get_user_data_row(user_id: int):
-    user_db_cursor.execute('SELECT * FROM user_data WHERE user_id = ?', (user_id,))
-    return user_db_cursor.fetchall()[0]
+    results = user_db.execute('SELECT * FROM user_data WHERE user_id = ?', (user_id,))
+    return results[0]
 
 
 def get_reply_row(reply_name: str):
-    replies_db_cursor.execute('SELECT * FROM multilang_replies WHERE reply_name = ?', (reply_name,))
-    return replies_db_cursor.fetchall()[0]
+    results = replies_db.execute('SELECT * FROM multilang_replies WHERE reply_name = ?', (reply_name,))
+    return results[0]
 
 
 def insert_reply_byid(reply_name: str, user_id: int):
     reply_row = get_reply_row(reply_name)
-    user_db_cursor.execute('SELECT * FROM user_data WHERE user_id = ?', (user_id,))
-    user_row = user_db_cursor.fetchall()[0]
+    user_row = user_db.execute('SELECT * FROM user_data WHERE user_id = ?', (user_id,))[0]
     lang = user_row[3]
     if lang == 'en':
         return reply_row[2].replace('\\n', '\n')
@@ -44,32 +49,27 @@ def insert_reply_bylang(reply_name: str, lang: str):
 
 
 def set_model_db(model: str, user_id: int):
-    with user_db:
-        user_db.execute(f"UPDATE user_data SET model = ? WHERE user_id = ?", (model, user_id,))
+    user_db.execute(f"UPDATE user_data SET model = ? WHERE user_id = ?", (model, user_id,))
 
 
 def set_apikey_db(api: str | None, user_id: int):
-    with user_db:
-        user_db.execute(f"UPDATE user_data SET apikey = ? WHERE user_id = ?", (api, user_id,))
+    user_db.execute(f"UPDATE user_data SET apikey = ? WHERE user_id = ?", (api, user_id,))
 
 
 def set_context_db(context_on: int, user_id: int):
     if context_on != 0:
         context_on = 1
-    with user_db:
-        user_db.execute(f"UPDATE user_data SET context_on = ? WHERE user_id = ?", (context_on, user_id,))
+    user_db.execute(f"UPDATE user_data SET context_on = ? WHERE user_id = ?", (context_on, user_id,))
 
 
 def set_lang_db(lang: str, user_id: int):
-    with user_db:
-        user_db.execute(f"UPDATE user_data SET lang = ? WHERE user_id = ?", (lang, user_id,))
+    user_db.execute(f"UPDATE user_data SET lang = ? WHERE user_id = ?", (lang, user_id,))
 
 
 def set_id_db(user_id: int):
     sql = 'INSERT OR IGNORE INTO user_data (user_id) values(?)'
     data = [user_id]
-    with user_db:
-        user_db.execute(sql, data)
+    user_db.execute(sql, data)
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -148,8 +148,7 @@ def context_reset(message):
     else:
         bot.send_message(message.chat.id, insert_reply_byid("context_reset_3", message.chat.id))
     msgs.pop(message.chat.id, None)
-    user_db_cursor.execute("DELETE FROM msgs_history WHERE user_id = ?", (message.chat.id,))
-    user_db.commit()
+    user_db.execute("DELETE FROM msgs_history WHERE user_id = ?", (message.chat.id,))
 
 
 @bot.message_handler(commands=['debug'])
@@ -177,49 +176,56 @@ def demo(message):
 
 
 def add_context_element(role: str, content: str, user_id: int):
-    with user_db:
-        user_db.execute("INSERT INTO msgs_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, role, content,))
+    user_db.execute("INSERT INTO msgs_history (user_id, role, message) VALUES (?, ?, ?)", (user_id, role, content,))
+
+
+def openai_request(user_id: int):
+    openai.api_key = get_user_data_row(user_id)[1]
+    completion = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=msgs[user_id])
+    openai.api_key = None
+    return completion.choices[0].message.content
+
+
+def select_all_user_context(user_id: int):
+    results = user_db.execute('SELECT * FROM msgs_history WHERE user_id = ?', (user_id,))
+    all_user_context = results
+    msgs[user_id] = list()
+    for i in range(0, len(all_user_context)):
+        msgs[user_id].append({"role": all_user_context[i][1], "content": all_user_context[i][2]})
 
 
 @bot.message_handler(func=lambda message: True)
 def ask(message):
     try:
-        ### global msgs
-        # Проверка на наличие установленного API-ключа
         if get_user_data_row(message.chat.id)[1] is None:
             bot.reply_to(message, insert_reply_byid("noapi_error", message.chat.id))
             return
 
-        # loading = bot.reply_to(message, "Отправляю запрос...")
-
         bot.send_chat_action(chat_id=message.chat.id, action="typing", timeout=15)
-        openai.api_key = get_user_data_row(message.chat.id)[1]
 
         if context_is_on(message.chat.id):
-            # msgs[message.chat.id] = list(msgs.get(message.chat.id, {}))
-            # msgs[message.chat.id].append({"role": "user", "content": message.text})
             add_context_element('user', message.text, message.chat.id)
-            user_db_cursor.execute('SELECT * FROM msgs_history WHERE user_id = ?', (message.chat.id,))
-            all_user_context = user_db_cursor.fetchall()
-            msgs[message.chat.id] = list()
-            for i in range(0, len(all_user_context)):
-                msgs[message.chat.id].append({"role": all_user_context[i][1], "content": all_user_context[i][2]})
+            select_all_user_context(message.chat.id)
         else:
             msgs[message.chat.id] = [{"role": "user", "content": message.text}]
 
-        completion = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=msgs[message.chat.id]
-        )
-        openai.api_key = None
+        current_reply = openai_request(message.chat.id)
 
-        current_reply = completion.choices[0].message.content
         if context_is_on(message.chat.id):
             add_context_element("assistant", current_reply, message.chat.id)
 
-        # bot.delete_message(message.chat.id, loading.message_id)
         bot.reply_to(message, current_reply, parse_mode=None)
         msgs.pop(message.chat.id, None)
+
+    except openai.InvalidRequestError as e:
+        token_lengths = re.findall(r"\d+(?=\s+tokens)", str(e))
+        to_remove = int(token_lengths[1]) - int(token_lengths[0])
+        bot.send_message(message.chat.id, f"🪄 Вероятно, превышен лимит величины контекста (токенов). "
+                                          f"Модель имеет лимит {token_lengths[0]}, размер вашего контекста составляет "
+                                          f"{token_lengths[1]}. <u>Выберите сообщения, которые удалить</u>, либо "
+                                          f"удалите все сразу: /context_reset. Предположительно, требуется удалить "
+                                          f"{to_remove} токенов(-а), что в количестве слов ≈ {to_remove * 3 / 4}.",
+                         parse_mode="HTML")
 
     except Exception as e:
         bot.send_message(message.chat.id,
