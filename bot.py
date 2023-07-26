@@ -1,25 +1,20 @@
 import math
 import hashlib
+import os
 import time
 import telebot
 import openai
 from telebot import types
 import re
 from sqlite3worker import Sqlite3Worker as slw
+import tiktoken
 
-'''
-user_db = sl.connect('qai.db', check_same_thread=False)
-user_db_cursor = user_db.cursor()
-replies_db = sl.connect("multilang_replies.db", check_same_thread=False)
-replies_db_cursor = replies_db.cursor()
-'''
 
+encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
 user_db = slw("qai.db")
 replies_db = slw("multilang_replies.db")
-
 msgs = {}
 history_debug = {}
-
 bot = telebot.TeleBot(open("botapi.txt").readline(), parse_mode=None, skip_pending=True)
 
 
@@ -114,6 +109,8 @@ def lang_call(call):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     set_id_db(message.chat.id)
+    if context_is_on(message.chat.id):
+        set_context_db(1, message.chat.id)
     bot.send_message(message.chat.id, insert_reply_byid('start', message.chat.id), parse_mode="HTML")
     lang_keyboard = types.InlineKeyboardMarkup()
     lang_keyboard.add(types.InlineKeyboardButton('Русский', callback_data='ru'))
@@ -198,14 +195,41 @@ def delete_call(call):
 @bot.message_handler(commands=['select_to_delete'])
 def select_to_delete(message):
     all_user_context = user_db.execute('SELECT * FROM msgs_history WHERE user_id = ?', (message.chat.id,))
+    if len(all_user_context) < 1:
+        bot.send_message(message.chat.id, insert_reply_byid("no_msgs", message.chat.id))
+        return
+    wait_msg = bot.send_message(message.chat.id, insert_reply_byid("counting_tokens", message.chat.id))
     delete_keyboard = types.InlineKeyboardMarkup()
     for i in range(0, len(all_user_context)):
+        msg = all_user_context[i][2]
+        msg_tokens = len(encoding.encode(msg))
         delete_keyboard.add(types.InlineKeyboardButton(
-           f'{all_user_context[i][1].capitalize()}: "{all_user_context[i][2]}"',
-           callback_data="DEL_" + str(all_user_context[i][3]))
+            f'[{msg_tokens}] {all_user_context[i][1].capitalize()}: "{msg[:100]}"',
+            callback_data="DEL_" + str(all_user_context[i][3]))
         )
     bot.send_message(message.chat.id, insert_reply_byid("select_to_delete", message.chat.id),
                      reply_markup=delete_keyboard)
+    bot.delete_message(message.chat.id, wait_msg.id)
+
+
+@bot.message_handler(commands=['export'])
+def export(message):
+    all_user_context = user_db.execute('SELECT * FROM msgs_history WHERE user_id = ?', (message.chat.id,))
+    if len(all_user_context) < 1:
+        bot.send_message(message.chat.id, insert_reply_byid("no_msgs_to_export", message.chat.id))
+        return
+    file_name = f"export_{message.chat.id}.txt"
+    with open(file_name, "w", encoding='utf-8') as txt:
+        for i in range(0, len(all_user_context)):
+            msg = all_user_context[i][2]
+            txt.write(f'{all_user_context[i][1].capitalize()}: "{msg}"\n\n')
+
+    bot.send_document(message.chat.id,
+                      open(file_name, "rb"),
+                      None,
+                      insert_reply_byid("file_sent", message.chat.id),
+                      )
+    os.remove(file_name)
 
 
 @bot.message_handler(commands=['motherlode'])
@@ -219,13 +243,6 @@ def add_context_element(role: str, content: str, user_id: int):
     muid = hashlib.md5(data.encode()).hexdigest()
     user_db.execute("INSERT INTO msgs_history (user_id, role, message, message_id) VALUES (?, ?, ?, ?)",
                     (user_id, role, content, muid))
-
-
-def openai_request(user_id: int):
-    openai.api_key = get_user_data_row(user_id)[1]
-    completion = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=msgs[user_id])
-    openai.api_key = None
-    return completion.choices[0].message.content
 
 
 def select_all_user_context(user_id: int):
@@ -254,7 +271,6 @@ def set_system_worker(message):
     bot.send_message(message.chat.id, "✔️")
 
 
-
 @bot.callback_query_handler(func=lambda call: call.data in ["context_reset", "select_to_delete"])
 def length_err_call(call):
     if call.data == "context_reset":
@@ -263,52 +279,124 @@ def length_err_call(call):
         select_to_delete(call.message)
 
 
-@bot.message_handler(func=lambda message: message.chat.id in get_all_users_ids())
-def ask(message):
+def custom_Exception(e, user_id):
+    bot.send_message(user_id, f"{insert_reply_byid('exception', user_id)}\n\n<b><u>{type(e).__name__}.</u></b> {e}",
+                     parse_mode="HTML")
+
+
+def custom_openai_InvalidRequestError(e, user_id):
+    token_lengths = re.findall(r"\d+(?=\s+tokens)", str(e))
+    to_remove = int(token_lengths[1]) - int(token_lengths[0])
+    length_err_keyboard = types.InlineKeyboardMarkup()
+    length_err_keyboard.add(types.InlineKeyboardButton(insert_reply_byid("select_to_delete", user_id),
+                                                       callback_data="select_to_delete"))
+    length_err_keyboard.add(types.InlineKeyboardButton(insert_reply_byid("context_reset_button", user_id),
+                                                       callback_data="context_reset", ))
+    bot.send_message(user_id, f"{insert_reply_byid('token_length_error_1', user_id)}"
+                                      f"{token_lengths[0]}"
+                                      f"{insert_reply_byid('token_length_error_2', user_id)}"
+                                      f"{token_lengths[1]}"
+                                      f"{insert_reply_byid('token_length_error_3', user_id)}"
+                                      f"{to_remove}"
+                                      f"{insert_reply_byid('token_length_error_4', user_id)}"
+                                      f"{math.ceil(to_remove * 3 / 4)}.",
+                     parse_mode="HTML", reply_markup=length_err_keyboard)
+
+
+def openai_request(user_id: int):
+    openai.api_key = get_user_data_row(user_id)[1]
+    completion = openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=msgs[user_id])
+    openai.api_key = None
+    return completion.choices[0].message.content
+
+
+def process_text_msg(message_text: str, user_id: int):
+    if get_user_data_row(user_id)[1] is None:
+        return insert_reply_byid("noapi_error", user_id)
+
+    bot.send_chat_action(chat_id=user_id, action="typing", timeout=10)
+    if context_is_on(user_id):
+        add_context_element('user', message_text, user_id)
+        select_all_user_context(user_id)
+    else:
+        msgs[user_id] = [{"role": "user", "content": message_text}]
+
+    current_reply = openai_request(user_id)
+
+    if context_is_on(user_id):
+        add_context_element("assistant", current_reply, user_id)
+
+    msgs.pop(user_id, None)
+    return current_reply
+
+
+@bot.message_handler(func=lambda message: message.chat.id in get_all_users_ids(), content_types=['text'])
+def ask_text(message):
     try:
-
-        if get_user_data_row(message.chat.id)[1] is None:
-            bot.reply_to(message, insert_reply_byid("noapi_error", message.chat.id))
-            return
-
-        bot.send_chat_action(chat_id=message.chat.id, action="typing", timeout=15)
-
-        if context_is_on(message.chat.id):
-            add_context_element('user', message.text, message.chat.id)
-            select_all_user_context(message.chat.id)
-        else:
-            msgs[message.chat.id] = [{"role": "user", "content": message.text}]
-
-        current_reply = openai_request(message.chat.id)
-
-        if context_is_on(message.chat.id):
-            add_context_element("assistant", current_reply, message.chat.id)
-
-        bot.reply_to(message, current_reply, parse_mode=None)
-        msgs.pop(message.chat.id, None)
+        bot.reply_to(message, process_text_msg(message.text, message.chat.id), parse_mode=None)
 
     except openai.InvalidRequestError as e:
-        token_lengths = re.findall(r"\d+(?=\s+tokens)", str(e))
-        to_remove = int(token_lengths[1]) - int(token_lengths[0])
-        length_err_keyboard = types.InlineKeyboardMarkup()
-        length_err_keyboard.add(types.InlineKeyboardButton(insert_reply_byid("select_to_delete", message.chat.id),
-                                                           callback_data="select_to_delete"))
-        length_err_keyboard.add(types.InlineKeyboardButton(insert_reply_byid("context_reset_button", message.chat.id),
-                                                           callback_data="context_reset", ))
-        bot.send_message(message.chat.id, f"{insert_reply_byid('token_length_error_1', message.chat.id)}"
-                                          f"{token_lengths[0]}"
-                                          f"{insert_reply_byid('token_length_error_2', message.chat.id)}"
-                                          f"{token_lengths[1]}"
-                                          f"{insert_reply_byid('token_length_error_3', message.chat.id)}"
-                                          f"{to_remove}"
-                                          f"{insert_reply_byid('token_length_error_4', message.chat.id)}"
-                                          f"{math.ceil(to_remove * 3 / 4)}.",
-                         parse_mode="HTML", reply_markup=length_err_keyboard)
+        custom_openai_InvalidRequestError(e, message.chat.id)
 
     except Exception as e:
-        bot.send_message(message.chat.id,
-                         f"{insert_reply_byid('exception', message.chat.id)}\n\n<b><u>{type(e).__name__}.</u></b> {e}",
-                         parse_mode="HTML")
+        custom_Exception(e, message.chat.id)
+
+
+@bot.message_handler(func=lambda message: message.chat.id in get_all_users_ids(), content_types=['document'])
+def ask_document(message):
+    try:
+        '''
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+
+        temp_file_path = f'temp_{message.chat.id}_{file_info}_{math.ceil(time.time())}'
+        with open(temp_file_path, 'wb') as temp_file:
+            temp_file.write(downloaded_file)
+
+        mime_type, _ = mimetypes.guess_type(temp_file_path)
+
+        if mime_type and mime_type.startswith('text/'):
+            with open(temp_file_path, 'r') as text_file:
+                file_content = text_file.read()
+                add_context_element("system",
+                                    insert_reply_byid("text_file_system_notice", message.chat.id),
+                                    message.chat.id)
+        else:
+            bot.reply_to(message, "Вы отправили не текстовый файл")
+
+        os.remove(temp_file_path)
+        '''
+        bot.reply_to(message, insert_reply_byid("ud_files", message.chat.id))
+
+    except openai.InvalidRequestError as e:
+        custom_openai_InvalidRequestError(e, message.chat.id)
+
+    except Exception as e:
+        custom_Exception(e, message.chat.id)
+
+
+@bot.message_handler(func=lambda message: message.chat.id in get_all_users_ids(), content_types=['voice'])
+def ask_text(message):
+    try:
+        bot.reply_to(message, insert_reply_byid("ud_voice", message.chat.id))
+
+    except openai.InvalidRequestError as e:
+        custom_openai_InvalidRequestError(e, message.chat.id)
+
+    except Exception as e:
+        custom_Exception(e, message.chat.id)
+
+
+@bot.message_handler(func=lambda message: message.chat.id in get_all_users_ids(), content_types=['video_note'])
+def ask_text(message):
+    try:
+        bot.reply_to(message, insert_reply_byid("ud_video_note", message.chat.id))
+
+    except openai.InvalidRequestError as e:
+        custom_openai_InvalidRequestError(e, message.chat.id)
+
+    except Exception as e:
+        custom_Exception(e, message.chat.id)
 
 
 bot.infinity_polling()
