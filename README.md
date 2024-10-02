@@ -1,5 +1,5 @@
 <img src="QAI.png"/><br>
-# QAI Chat <a href="https://t.me/qaichatbot">@qaichatbot</a>
+# QAI Chat
 
 🤖 <a href="https://t.me/qaichatbot">QAI Chat</a> - бот, который поможет вам использовать ChatGPT прямо в Telegram. Идеальный симбиоз искусственного интеллекта и мессенджера - доступ в пару кликов 👆💫
 
@@ -15,4 +15,4 @@
 - [ ] Распознавание голосовых, чтение файлов
 - [x] Выбор режима (system)
 
-## 🪄 Попробовать: <a href="https://t.me/qaichatbot">@qaichatbot</a> 🪄
+## 🪄 Попробовать: <a href="https://t.me/qaichatbot">@qaichatbot</a> (не работает) 🪄
